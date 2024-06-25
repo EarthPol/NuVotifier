@@ -21,6 +21,7 @@ configurations {
 
 dependencies {
     "compileOnly"("io.papermc.paper:paper-api:1.18.2-R0.1-SNAPSHOT")
+    "compileOnly"("dev.folia:folia-api:1.20.6-R0.1-SNAPSHOT")
     "api"(project(":nuvotifier-api"))
     "api"(project(":nuvotifier-common"))
 }

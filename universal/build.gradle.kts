@@ -16,7 +16,7 @@ dependencies {
     "implementation"(project(":nuvotifier-common"))
     "implementation"(project(":nuvotifier-bukkit"))
     "implementation"(project(":nuvotifier-bungeecord"))
-    "implementation"(project(":nuvotifier-sponge"))
+    //"implementation"(project(":nuvotifier-sponge"))
     "implementation"(project(":nuvotifier-fabric"))
     "implementation"(project(":nuvotifier-velocity"))
 }

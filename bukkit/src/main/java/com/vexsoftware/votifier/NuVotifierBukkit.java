@@ -1,21 +1,3 @@
-/*
- * Copyright (C) 2012 Vex Software LLC
- * This file is part of Votifier.
- *
- * Votifier is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * Votifier is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with Votifier.  If not, see <http://www.gnu.org/licenses/>.
- */
-
 package com.vexsoftware.votifier;
 
 import com.vexsoftware.votifier.cmd.NVReloadCmd;
@@ -33,6 +15,10 @@ import com.vexsoftware.votifier.platform.JavaUtilLogger;
 import com.vexsoftware.votifier.platform.LoggingAdapter;
 import com.vexsoftware.votifier.platform.VotifierPlugin;
 import com.vexsoftware.votifier.platform.scheduler.VotifierScheduler;
+import com.vexsoftware.votifier.scheduling.FoliaTaskScheduler;
+import com.vexsoftware.votifier.scheduling.ScheduledTask;
+import com.vexsoftware.votifier.scheduling.TaskScheduler;
+import com.vexsoftware.votifier.scheduling.TaskSchedulerAdapter;
 import com.vexsoftware.votifier.util.IOUtil;
 import com.vexsoftware.votifier.util.KeyCreator;
 import com.vexsoftware.votifier.util.TokenUtil;
@@ -51,40 +37,23 @@ import java.security.Key;
 import java.security.KeyPair;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 /**
  * The main Votifier plugin class.
- *
- * @author Blake Beaupain
- * @author Kramer Campbell
  */
 public class NuVotifierBukkit extends JavaPlugin implements VoteHandler, VotifierPlugin, ForwardedVoteListener {
 
-    /**
-     * The server bootstrap.
-     */
     private VotifierServerBootstrap bootstrap;
-
-    /**
-     * The RSA key pair.
-     */
     private KeyPair keyPair;
-
-    /**
-     * Debug mode flag
-     */
     private boolean debug;
-
-    /**
-     * Keys used for websites.
-     */
     private Map<String, Key> tokens = new HashMap<>();
-
     private ForwardingVoteSink forwardingMethod;
-    private VotifierScheduler scheduler;
     private LoggingAdapter pluginLogger;
     private boolean isFolia;
+    private TaskScheduler scheduler;
+    private VotifierScheduler votifierScheduler;
 
     private boolean loadAndBind() {
         try {
@@ -96,7 +65,8 @@ public class NuVotifierBukkit extends JavaPlugin implements VoteHandler, Votifie
             isFolia = false;
         }
 
-        scheduler = new BukkitScheduler(this);
+        scheduler = new FoliaTaskScheduler(this);
+        votifierScheduler = new TaskSchedulerAdapter(scheduler);
         pluginLogger = new JavaUtilLogger(getLogger());
         if (!getDataFolder().exists()) {
             if (!getDataFolder().mkdir()) {
@@ -104,42 +74,24 @@ public class NuVotifierBukkit extends JavaPlugin implements VoteHandler, Votifie
             }
         }
 
-        // Handle configuration.
         File config = new File(getDataFolder(), "config.yml");
 
-        /*
-         * Use IP address from server.properties as a default for
-         * configurations. Do not use InetAddress.getLocalHost() as it most
-         * likely will return the main server address instead of the address
-         * assigned to the server.
-         */
         String hostAddr = Bukkit.getServer().getIp();
         if (hostAddr == null || hostAddr.length() == 0)
             hostAddr = "0.0.0.0";
 
-        /*
-         * Create configuration file if it does not exists; otherwise, load it
-         */
         if (!config.exists()) {
             try {
-                // First time run - do some initialization.
                 getLogger().info("Configuring Votifier for the first time...");
-
-                // Initialize the configuration file.
                 if (!config.createNewFile()) {
                     throw new IOException("Unable to create the config file at " + config);
                 }
 
-                // Load and manually replace variables in the configuration.
                 String cfgStr = new String(IOUtil.readAllBytes(getResource("bukkitConfig.yml")), StandardCharsets.UTF_8);
                 String token = TokenUtil.newToken();
                 cfgStr = cfgStr.replace("%default_token%", token).replace("%ip%", hostAddr);
                 Files.copy(new ByteArrayInputStream(cfgStr.getBytes(StandardCharsets.UTF_8)), config.toPath(), StandardCopyOption.REPLACE_EXISTING);
 
-                /*
-                 * Remind hosted server admins to be sure they have the right
-                 * port number.
-                 */
                 getLogger().info("------------------------------------------------------------------------------");
                 getLogger().info("Assigning NuVotifier to listen on port 8192. If you are hosting Craftbukkit on a");
                 getLogger().info("shared server please check with your hosting provider to verify that this port");
@@ -159,13 +111,8 @@ public class NuVotifierBukkit extends JavaPlugin implements VoteHandler, Votifie
         YamlConfiguration cfg;
         File rsaDirectory = new File(getDataFolder(), "rsa");
 
-        // Load configuration.
         cfg = YamlConfiguration.loadConfiguration(config);
 
-        /*
-         * Create RSA directory and keys if it does not exist; otherwise, read
-         * keys.
-         */
         try {
             if (!rsaDirectory.exists()) {
                 if (!rsaDirectory.mkdir()) {
@@ -177,20 +124,16 @@ public class NuVotifierBukkit extends JavaPlugin implements VoteHandler, Votifie
                 keyPair = RSAIO.load(rsaDirectory);
             }
         } catch (Exception ex) {
-            getLogger().log(Level.SEVERE,
-                    "Error reading configuration file or RSA tokens", ex);
+            getLogger().log(Level.SEVERE, "Error reading configuration file or RSA tokens", ex);
             return false;
         }
 
-        // the quiet flag always runs priority to the debug flag
         if (cfg.isBoolean("quiet")) {
             debug = !cfg.getBoolean("quiet");
         } else {
-            // otherwise, default to being noisy
             debug = cfg.getBoolean("debug", true);
         }
 
-        // Load Votifier tokens.
         ConfigurationSection tokenSection = cfg.getConfigurationSection("tokens");
 
         if (tokenSection != null) {
@@ -207,8 +150,7 @@ public class NuVotifierBukkit extends JavaPlugin implements VoteHandler, Votifie
             try {
                 cfg.save(config);
             } catch (IOException e) {
-                getLogger().log(Level.SEVERE,
-                        "Error generating Votifier token", e);
+                getLogger().log(Level.SEVERE, "Error generating Votifier token", e);
                 return false;
             }
             getLogger().info("------------------------------------------------------------------------------");
@@ -219,7 +161,6 @@ public class NuVotifierBukkit extends JavaPlugin implements VoteHandler, Votifie
             getLogger().info("------------------------------------------------------------------------------");
         }
 
-        // Initialize the receiver.
         final String host = cfg.getString("host", hostAddr);
         final int port = cfg.getInt("port", 8192);
         if (!debug)
@@ -246,7 +187,7 @@ public class NuVotifierBukkit extends JavaPlugin implements VoteHandler, Votifie
 
         ConfigurationSection forwardingConfig = cfg.getConfigurationSection("forwarding");
         if (forwardingConfig != null) {
-            String method = forwardingConfig.getString("method", "none").toLowerCase(); //Default to lower case for case-insensitive searches
+            String method = forwardingConfig.getString("method", "none").toLowerCase();
             if ("none".equals(method)) {
                 getLogger().info("Method none selected for vote forwarding: Votes will not be received from a forwarder.");
             } else if ("pluginmessaging".equals(method)) {
@@ -265,7 +206,6 @@ public class NuVotifierBukkit extends JavaPlugin implements VoteHandler, Votifie
     }
 
     private void halt() {
-        // Shut down the network handlers.
         if (bootstrap != null) {
             bootstrap.shutdown();
             bootstrap = null;
@@ -284,7 +224,7 @@ public class NuVotifierBukkit extends JavaPlugin implements VoteHandler, Votifie
 
         if (!loadAndBind()) {
             gracefulExit();
-            setEnabled(false); // safer to just bomb out
+            setEnabled(false);
         }
     }
 
@@ -326,7 +266,7 @@ public class NuVotifierBukkit extends JavaPlugin implements VoteHandler, Votifie
 
     @Override
     public VotifierScheduler getScheduler() {
-        return scheduler;
+        return votifierScheduler;
     }
 
     public boolean isDebug() {
@@ -381,13 +321,9 @@ public class NuVotifierBukkit extends JavaPlugin implements VoteHandler, Votifie
         }
 
         if (!isFolia) {
-            getServer().getScheduler().runTask(
-                    this, () -> getServer().getPluginManager().callEvent(new VotifierEvent(vote))
-            );
+            votifierScheduler.delayedOnPool(() -> getServer().getPluginManager().callEvent(new VotifierEvent(vote)), 0, TimeUnit.MILLISECONDS);
         } else {
-            getServer().getScheduler().runTaskAsynchronously(
-                    this, () -> getServer().getPluginManager().callEvent(new VotifierEvent(vote, true))
-            );
+            votifierScheduler.delayedOnPool(() -> getServer().getPluginManager().callEvent(new VotifierEvent(vote, true)), 0, TimeUnit.MILLISECONDS);
         }
     }
 }
